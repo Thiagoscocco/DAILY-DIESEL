@@ -1,214 +1,125 @@
+# customtkinter-based minimal UI for email sending and running consulta
 import os
-import json
 import threading
-import traceback
-import tkinter as tk
-from tkinter import ttk, messagebox
-from datetime import datetime
+import customtkinter as ctk
+from tkinter import messagebox
 from dotenv import load_dotenv
 
-# Tentamos usar Pillow para redimensionar PNGs; se não houver, usamos PhotoImage do Tk
-try:
-    from PIL import Image, ImageTk  # pip install pillow
-    PIL_OK = True
-except Exception:
-    PIL_OK = False
-
-# ----------------------------------
-# Config
-# ----------------------------------
 load_dotenv()
-HEARTBEAT_PATH = os.getenv("HEARTBEAT_PATH", "runtime/heartbeat.json").strip()
+
 SHEET_PATH = os.getenv("SHEET_PATH", "data/planilha_unica.xlsx").strip()
-LOGO1_PATH = os.getenv("LOGO1_PATH", "assets/logo1.png").strip()
-LOGO2_PATH = os.getenv("LOGO2_PATH", "assets/logo2.png").strip()
 
-REFRESH_MS = 10_000  # 10 segundos
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-# ----------------------------------
-# Utilidades
-# ----------------------------------
-def read_heartbeat() -> dict:
-    try:
-        if os.path.exists(HEARTBEAT_PATH):
-            with open(HEARTBEAT_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
 
-def status_from_heartbeat(hb: dict) -> tuple[str, str]:
-    """
-    (texto_status, cor_hex)
-    Em Operação (verde) se last_success mais recente que last_error (ou sem erro).
-    Fora de Operação (vermelho) se last_error >= last_success ou sem success.
-    """
-    last_success = hb.get("last_success", "") or ""
-    last_error = hb.get("last_error", "") or ""
-    if last_success and (not last_error or last_error < last_success):
-        return "Em Operação", "#1f9d55"  # verde
-    if last_error and (not last_success or last_error >= last_success):
-        return "Fora de Operação", "#cc1f1a"  # vermelho
-    return "Indeterminado", "#6b7280"  # cinza
-
-def format_error_list(hb: dict) -> list[str]:
-    out = []
-    last_error = hb.get("last_error", "")
-    last_error_msg = hb.get("last_error_msg", "")
-    if last_error:
-        item = f"{last_error} - {last_error_msg}" if last_error_msg else f"{last_error}"
-        out.append(item)
-    return out
-
-# ----------------------------------
-# Envio de e-mail (thread)
-# ----------------------------------
-def threaded_resend_email(button: ttk.Button, root: tk.Tk, sheet_path: str):
-    def _task():
-        try:
-            button.state(["disabled"])
-            from mailer import send_weekly_email
-            send_weekly_email(sheet_path)
-            messagebox.showinfo("Reenvio de E-mails", "E-mail reenviado com sucesso!")
-        except Exception as e:
-            traceback.print_exc()
-            messagebox.showerror("Erro ao reenviar", f"Ocorreu um erro ao reenviar o e-mail:\n{e}")
-        finally:
-            try:
-                button.state(["!disabled"])
-            except Exception:
-                pass
-
-    t = threading.Thread(target=_task, daemon=True)
-    t.start()
-
-# ----------------------------------
-# GUI
-# ----------------------------------
-class App(tk.Tk):
+class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Acompanhamento – Diesel & Petróleo")
-        self.geometry("760x820")
-        self.minsize(640, 760)
+        self.title("Daily Diesel")
+        self.geometry("560x420")
+        self.minsize(520, 360)
 
-        # Estilo
-        try:
-            self.call("tk", "scaling", 1.25)
-        except Exception:
-            pass
-        style = ttk.Style(self)
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-        style.configure("TLabel", font=("Segoe UI", 11))
-        style.configure("Title.TLabel", font=("Segoe UI", 14, "bold"))
-        style.configure("Status.TLabel", font=("Segoe UI", 16, "bold"))
-        style.configure("Footer.TLabel", font=("Segoe UI", 10, "italic"), foreground="#6b7280")
-        style.configure("Card.TLabelframe.Label", font=("Segoe UI", 12, "bold"))
+        self.recipients: list[str] = []
 
-        # Container principal
-        wrap = ttk.Frame(self, padding=14)
-        wrap.pack(fill="both", expand=True)
+        # Layout principal
+        self.grid_columnconfigure(0, weight=1)
 
-        # --------- LOGO SUPERIOR ----------
-        self.frame_logo_top = ttk.Labelframe(wrap, text="  ", padding=12, style="Card.TLabelframe")
-        self.frame_logo_top.pack(fill="both", expand=False, pady=(0, 10))
-        self.logo1_label = ttk.Label(self.frame_logo_top)
-        self.logo1_label.pack(expand=True)
-        self._logo1_img_ref = None
+        header = ctk.CTkLabel(self, text="ENVIO SEMANAL", font=("Segoe UI", 20, "bold"))
+        header.grid(row=0, column=0, pady=(16, 8), padx=16, sticky="n")
 
-        # --------- STATUS ----------
-        self.frame_status = ttk.Labelframe(wrap, text="Status do Sistema", padding=12, style="Card.TLabelframe")
-        self.frame_status.pack(fill="x", pady=(0, 10))
+        # Caixa de emails
+        frame_emails = ctk.CTkFrame(self)
+        frame_emails.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        frame_emails.grid_columnconfigure(1, weight=1)
 
-        self.lbl_status_title = ttk.Label(self.frame_status, text="Status:", style="Title.TLabel")
-        self.lbl_status_title.pack(anchor="w")
+        lbl = ctk.CTkLabel(frame_emails, text="E-mails (um por vez):")
+        lbl.grid(row=0, column=0, padx=12, pady=12, sticky="w")
 
-        self.lbl_status_value = ttk.Label(self.frame_status, text="—", style="Status.TLabel")
-        self.lbl_status_value.pack(anchor="w", pady=(6, 0))
+        self.entry_email = ctk.CTkEntry(frame_emails, placeholder_text="ex: pessoa@empresa.com")
+        self.entry_email.grid(row=0, column=1, padx=(0, 12), pady=12, sticky="ew")
 
-        self.lbl_last_run = ttk.Label(self.frame_status, text="Última execução: —")
-        self.lbl_last_run.pack(anchor="w", pady=(6, 0))
+        self.btn_add = ctk.CTkButton(frame_emails, text="ADICIONAR", command=self._add_email)
+        self.btn_add.grid(row=0, column=2, padx=12, pady=12)
 
-        # --------- ERROS ----------
-        self.frame_erros = ttk.Labelframe(wrap, text="Dias registrados com erro", padding=12, style="Card.TLabelframe")
-        self.frame_erros.pack(fill="both", expand=False, pady=(0, 10))
+        self.listbox = ctk.CTkTextbox(frame_emails, height=120)
+        self.listbox.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="nsew")
+        self.listbox.configure(state="disabled")
 
-        self.err_listbox = tk.Listbox(self.frame_erros, height=4, font=("Consolas", 11))
-        self.err_listbox.pack(fill="both", expand=True)
+        # Ações
+        actions = ctk.CTkFrame(self)
+        actions.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 12))
+        actions.grid_columnconfigure((0, 1), weight=1)
 
-        # --------- BOTÃO ----------
-        self.btn_resend = ttk.Button(
-            wrap, text="Reenviar E-Mails",
-            command=lambda: threaded_resend_email(self.btn_resend, self, SHEET_PATH)
-        )
-        self.btn_resend.pack(pady=(0, 10))
+        self.btn_send = ctk.CTkButton(actions, text="ENVIAR E-MAILS", command=self._send_emails)
+        self.btn_send.grid(row=0, column=0, padx=(0, 6), pady=6, sticky="ew")
 
-        # --------- LOGO INFERIOR ----------
-        self.frame_logo_bottom = ttk.Labelframe(wrap, text="  ", padding=12, style="Card.TLabelframe")
-        self.frame_logo_bottom.pack(fill="both", expand=True, pady=(0, 10))
-        self.logo2_label = ttk.Label(self.frame_logo_bottom)
-        self.logo2_label.pack(expand=True)
-        self._logo2_img_ref = None
+        self.btn_run = ctk.CTkButton(actions, text="RODAR CONSULTA", command=self._run_consulta)
+        self.btn_run.grid(row=0, column=1, padx=(6, 0), pady=6, sticky="ew")
 
-        # --------- RODAPÉ ----------
-        self.footer = ttk.Label(wrap, text="dev: Thiagoscocco", style="Footer.TLabel")
-        self.footer.pack(side="bottom", anchor="e")
+        # Rodapé simples
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=3, column=0, padx=16, pady=(8, 16), sticky="ew")
+        footer.grid_columnconfigure(0, weight=1)
+        footer.grid_columnconfigure(1, weight=0)
 
-        # Carrega logos e inicia atualizações
-        self.load_logos()
-        self.refresh_status()
-        self.after(REFRESH_MS, self._auto_refresh)
+        self.status = ctk.CTkLabel(footer, text="Pronto.")
+        self.status.grid(row=0, column=0, sticky="w")
 
-    # ------ Métodos de atualização ------
-    def _load_logo(self, path: str, target_label: ttk.Label, store_attr: str):
-        if not os.path.exists(path):
-            target_label.configure(text=f"(Logo não encontrada em {path})")
-            setattr(self, store_attr, None)
+        self.dev = ctk.CTkLabel(footer, text="DEV:Thiagoscocco", text_color="#6b7280")
+        self.dev.grid(row=0, column=1, sticky="e")
+
+    def _set_status(self, text: str) -> None:
+        self.status.configure(text=text)
+
+    def _add_email(self) -> None:
+        email = (self.entry_email.get() or "").strip()
+        if not email:
+            messagebox.showwarning("E-mail vazio", "Digite um e-mail válido.")
             return
-        try:
-            if PIL_OK:
-                # Redimensiona ambas para o MESMO tamanho máximo
-                max_w, max_h = 310, 160
-                img = Image.open(path)
-                img.thumbnail((max_w, max_h))
-                ref = ImageTk.PhotoImage(img)
-            else:
-                ref = tk.PhotoImage(file=path)  # sem redimensionamento
-            target_label.configure(image=ref, text="")
-            setattr(self, store_attr, ref)  # manter referência
-        except Exception as e:
-            target_label.configure(text=f"Erro ao carregar logo: {e}")
-            setattr(self, store_attr, None)
+        self.recipients.append(email)
+        self.entry_email.delete(0, "end")
+        self._refresh_list()
 
-    def load_logos(self):
-        self._load_logo(LOGO1_PATH, self.logo1_label, "_logo1_img_ref")
-        self._load_logo(LOGO2_PATH, self.logo2_label, "_logo2_img_ref")
+    def _refresh_list(self) -> None:
+        self.listbox.configure(state="normal")
+        self.listbox.delete("1.0", "end")
+        for e in self.recipients:
+            self.listbox.insert("end", f"{e}\n")
+        self.listbox.configure(state="disabled")
 
-    def refresh_status(self):
-        hb = read_heartbeat()
-        status_txt, status_color = status_from_heartbeat(hb)
+    def _send_emails(self) -> None:
+        def worker():
+            try:
+                self.btn_send.configure(state="disabled")
+                from mailer import send_weekly_email
+                send_weekly_email(SHEET_PATH, recipients=self.recipients or None)
+                messagebox.showinfo("E-mail", "E-mails enviados com sucesso!")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha ao enviar e-mails:\n{e}")
+            finally:
+                self.btn_send.configure(state="normal")
+                self._set_status("Pronto.")
 
-        self.lbl_status_value.configure(text=status_txt, foreground=status_color)
+        self._set_status("Enviando…")
+        threading.Thread(target=worker, daemon=True).start()
 
-        last_run = hb.get("last_run", "—")
-        try:
-            if last_run and last_run != "—":
-                dt = datetime.fromisoformat(last_run)
-                last_run_fmt = dt.strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                last_run_fmt = "—"
-        except Exception:
-            last_run_fmt = last_run
-        self.lbl_last_run.configure(text=f"Última execução: {last_run_fmt}")
+    def _run_consulta(self) -> None:
+        def worker():
+            try:
+                self.btn_run.configure(state="disabled")
+                from main import run_consulta
+                ref_date = run_consulta(send_email_if_day=False)
+                messagebox.showinfo("Consulta", f"Consulta concluída para {ref_date}.")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha na consulta:\n{e}")
+            finally:
+                self.btn_run.configure(state="normal")
+                self._set_status("Pronto.")
 
-        self.err_listbox.delete(0, tk.END)
-        for item in format_error_list(hb):
-            self.err_listbox.insert(tk.END, item)
+        self._set_status("Consultando…")
+        threading.Thread(target=worker, daemon=True).start()
 
-    def _auto_refresh(self):
-        self.refresh_status()
-        self.after(REFRESH_MS, self._auto_refresh)
 
 if __name__ == "__main__":
     app = App()

@@ -58,7 +58,17 @@ LIST_B_HASH = [
 # =============================
 # Utilidades
 # =============================
-def _recipients() -> List[str]:
+def _recipients(override: List[str] | None = None) -> List[str]:
+    """Resolve a lista de destinatários.
+    Se "override" for fornecido, usa-a (validando itens não vazios). Caso contrário,
+    usa EMAIL_TO_PRIMARY/EMAIL_TO_SECONDARY do ambiente.
+    """
+    if override is not None:
+        recips = [e.strip() for e in override if isinstance(e, str) and e.strip()]
+        if not recips:
+            raise RuntimeError("Lista de destinatários vazia")
+        return recips
+
     recips = []
     if EMAIL_TO_PRIMARY:
         recips.append(EMAIL_TO_PRIMARY)
@@ -159,7 +169,7 @@ def _attach_file(msg: MIMEMultipart, file_path: str, attach_name: str | None = N
     msg.attach(part)
 
 
-def send_weekly_email(sheet_path: str | None = None) -> None:
+def send_weekly_email(sheet_path: str | None = None, recipients: List[str] | None = None) -> None:
     sheet = sheet_path or SHEET_PATH
     if not os.path.exists(sheet):
         raise FileNotFoundError(f"Planilha não encontrada: {sheet}")
@@ -173,7 +183,8 @@ def send_weekly_email(sheet_path: str | None = None) -> None:
     # Monta e-mail
     msg = MIMEMultipart()
     msg["From"] = EMAIL_FROM
-    msg["To"] = ", ".join(_recipients())
+    resolved_recipients = _recipients(recipients)
+    msg["To"] = ", ".join(resolved_recipients)
     msg["Subject"] = _compose_subject(ref_date)
     msg.attach(MIMEText(_compose_body(df), "plain"))
 
@@ -187,15 +198,15 @@ def send_weekly_email(sheet_path: str | None = None) -> None:
             server.ehlo()
             server.starttls(context=context)
             server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(EMAIL_FROM, _recipients(), msg.as_string())
+            server.sendmail(EMAIL_FROM, resolved_recipients, msg.as_string())
     else:
         # SSL direto (porta 465)
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
             server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(EMAIL_FROM, _recipients(), msg.as_string())
+            server.sendmail(EMAIL_FROM, resolved_recipients, msg.as_string())
 
-    print("✅ E-mail enviado com sucesso para:", ", ".join(_recipients()))
+    print("✅ E-mail enviado com sucesso para:", ", ".join(resolved_recipients))
 
 
 if __name__ == "__main__":

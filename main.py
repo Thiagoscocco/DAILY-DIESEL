@@ -221,7 +221,10 @@ def update_sheet(brent_date: str, brent_bbl: float, diesel_date: str, diesel_bbl
 # ------------------------------
 # Execução simples (teste manual)
 # ------------------------------
-if __name__ == "__main__":
+def run_consulta(send_email_if_day: bool = True) -> str:
+    """Executa a coleta, atualiza a planilha e opcionalmente envia e-mail no dia configurado.
+    Retorna a data de referência usada no registro (YYYY-MM-DD).
+    """
     try:
         # 1) Coleta
         b_date, b_val = fetch_brent_daily_from_fred()
@@ -232,7 +235,7 @@ if __name__ == "__main__":
         ref_date = update_sheet(b_date, b_val, d_date, d_val)
 
         # 3) Se hoje é o dia do e-mail, enviar com a planilha anexa
-        if _is_email_day(ref_date):
+        if send_email_if_day and _is_email_day(ref_date):
             try:
                 send_weekly_email(SHEET_PATH)
             except Exception as e:
@@ -243,6 +246,12 @@ if __name__ == "__main__":
         else:
             _write_heartbeat(success=True)
 
+        return ref_date
     except Exception as e:
         print(f" Erro no processo: {e}")
         _write_heartbeat(success=False, error_msg=e)
+        raise
+
+
+if __name__ == "__main__":
+    run_consulta(send_email_if_day=True)
