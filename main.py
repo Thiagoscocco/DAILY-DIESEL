@@ -1,10 +1,11 @@
 import os
 import json
+import argparse
 import requests
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from mailer import send_weekly_email 
+from mailer import send_weekly_email
 
 load_dotenv()
 
@@ -63,6 +64,42 @@ def _fred_latest_observation(series_id: str, window_days: int = 40) -> tuple[str
             return obs["date"], float(v)
     raise RuntimeError(f"Sem observações numéricas recentes no FRED para {series_id}")
 
+def _fred_series_range(series_id: str, start_date: str, end_date: str) -> list[tuple[str, float]]:
+    """
+    Retorna todas as observaÃ§Ãµes numÃ©ricas do FRED (ordem crescente) no intervalo solicitado.
+    """
+    if not FRED_API_KEY:
+        raise RuntimeError("FRED_API_KEY ausente no .env")
+
+    if not start_date or not end_date:
+        raise ValueError("Datas inicial e final sÃ£o obrigatÃ³rias para o backfill")
+
+    start_dt = datetime.fromisoformat(start_date)
+    end_dt = datetime.fromisoformat(end_date)
+    if start_dt > end_dt:
+        raise ValueError("Data inicial maior que data final no backfill")
+
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": series_id,
+        "api_key": FRED_API_KEY,
+        "file_type": "json",
+        "observation_start": start_dt.date().isoformat(),
+        "observation_end": end_dt.date().isoformat(),
+        "sort_order": "asc",
+        "limit": 10000,
+    }
+    js = _http_get(url, params)
+    data = []
+    for obs in js.get("observations", []):
+        v = obs.get("value")
+        if v is not None and v != ".":
+            data.append((obs["date"], float(v)))
+    if not data:
+        raise RuntimeError(f"Sem dados retornados do FRED para {series_id} no intervalo solicitado")
+    return data
+
+
 def fetch_brent_daily_from_fred() -> tuple[str, float]:
     """Brent (USD/bbl) via FRED (DCOILBRENTEU por padrão)."""
     return _fred_latest_observation(SERIES_BRENT_ID)
@@ -71,6 +108,15 @@ def fetch_diesel_daily_from_fred() -> tuple[str, float]:
     """Diesel ULSD (USD/gal) via FRED → converte para USD/bbl (×42)."""
     d_date, d_gal = _fred_latest_observation(SERIES_DIESEL_FRED_ID)
     return d_date, float(d_gal) * GAL_TO_BBL
+
+def fetch_brent_range(start_date: str, end_date: str) -> list[tuple[str, float]]:
+    return _fred_series_range(SERIES_BRENT_ID, start_date, end_date)
+
+def fetch_diesel_range(start_date: str, end_date: str) -> list[tuple[str, float]]:
+    return [
+        (date_str, value * GAL_TO_BBL)
+        for date_str, value in _fred_series_range(SERIES_DIESEL_FRED_ID, start_date, end_date)
+    ]
 
 # ------------------------------
 # Suporte: email-day / semana
@@ -218,9 +264,6 @@ def update_sheet(brent_date: str, brent_bbl: float, diesel_date: str, diesel_bbl
     print(f" Planilha atualizada com sucesso em {SHEET_PATH}{msg_week}")
     return ref_date
 
-# ------------------------------
-# Execução simples (teste manual)
-# ------------------------------
 def run_consulta(send_email_if_day: bool = True) -> str:
     """Executa a coleta, atualiza a planilha e opcionalmente envia e-mail no dia configurado.
     Retorna a data de referência usada no registro (YYYY-MM-DD).
@@ -253,5 +296,71 @@ def run_consulta(send_email_if_day: bool = True) -> str:
         raise
 
 
+def run_backfill_range(start_date: str, end_date: str, send_email_if_day: bool = False) -> list[str]:
+    """
+    Atualiza a planilha para todas as datas no intervalo informado (inclusive).
+    Retorna a lista de datas processadas.
+    """
+    try:
+        brent_hist = dict(fetch_brent_range(start_date, end_date))
+        diesel_hist = dict(fetch_diesel_range(start_date, end_date))
+
+        common_dates = sorted(set(brent_hist.keys()) & set(diesel_hist.keys()))
+        if not common_dates:
+            raise RuntimeError("Sem datas em comum entre Brent e Diesel no intervalo solicitado")
+
+        processed: list[str] = []
+        for date_iso in common_dates:
+            ref_date = update_sheet(date_iso, brent_hist[date_iso], date_iso, diesel_hist[date_iso])
+            processed.append(ref_date)
+
+            if send_email_if_day and _is_email_day(ref_date):
+                try:
+                    send_weekly_email(SHEET_PATH)
+                except Exception as email_err:
+                    print(f" Erro ao enviar e-mail durante o backfill ({ref_date}): {email_err}")
+
+        _write_heartbeat(success=True)
+        return processed
+    except Exception as e:
+        _write_heartbeat(success=False, error_msg=e)
+        raise
+
+
+def _resolve_week_range(year: int, start_week: int, end_week: int) -> tuple[str, str]:
+    if start_week < 1 or end_week < 1:
+        raise ValueError("Semana ISO deve ser >= 1")
+    if start_week > end_week:
+        raise ValueError("Semana inicial maior que a final")
+    start_date = datetime.fromisocalendar(year, start_week, 1).date()
+    end_date = datetime.fromisocalendar(year, end_week, 7).date()
+    return start_date.isoformat(), end_date.isoformat()
+
+
 if __name__ == "__main__":
-    run_consulta(send_email_if_day=True)
+    parser = argparse.ArgumentParser(description="Executa a coleta diária ou preenche intervalos históricos.")
+    parser.add_argument("--backfill", action="store_true", help="Preenche o intervalo informado em vez da coleta do dia.")
+    parser.add_argument("--start-date", help="Data inicial (YYYY-MM-DD) para o backfill.")
+    parser.add_argument("--end-date", help="Data final (YYYY-MM-DD) para o backfill.")
+    parser.add_argument("--year", type=int, help="Ano ISO para referência por semana no backfill.")
+    parser.add_argument("--start-week", type=int, help="Semana ISO inicial (1-53) para o backfill.")
+    parser.add_argument("--end-week", type=int, help="Semana ISO final (1-53) para o backfill.")
+    parser.add_argument(
+        "--send-email-if-day",
+        action="store_true",
+        help="Durante o backfill, envia os e-mails quando cair no dia configurado.",
+    )
+    args = parser.parse_args()
+
+    if args.backfill:
+        if args.start_date and args.end_date:
+            start_range, end_range = args.start_date, args.end_date
+        elif args.year and args.start_week and args.end_week:
+            start_range, end_range = _resolve_week_range(args.year, args.start_week, args.end_week)
+        else:
+            parser.error("Backfill requer --start-date/--end-date ou --year + --start-week + --end-week.")
+
+        processed = run_backfill_range(start_range, end_range, send_email_if_day=args.send_email_if_day)
+        print(f" Backfill concluído: {len(processed)} registros entre {start_range} e {end_range}.")
+    else:
+        run_consulta(send_email_if_day=True)

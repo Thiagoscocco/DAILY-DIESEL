@@ -31,33 +31,16 @@ EMAIL_DAY = (os.getenv("EMAIL_DAY", "FRI").strip() or "FRI").upper()
 
 _DAY_MAP = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
 
-# =============================
-# Listas para o sorteio semanal
-# =============================
-# Para *(____)
+
 LIST_A_ASTERISCO = [
-    "Victoria Maestri",
-    "Loiras da Puc",
-    "Izadora Bagio",
-    "Julia Backes",
-    "Bianca da Incentive Jr.",
-    "Gatas da Vet",
+    ""
     ]
 
 # Para #(____)
 LIST_B_HASH = [
-    "Fogão 4 bocas da zootec",
-    "Loirinha da Vet",
-    "Dani Furacão",
-    "Fofucho",
-    "Gordo chaveiro",
-    "Sarah Ribeiro",
-    "Carol Corim",
+    ""
 ]
 
-# =============================
-# Utilidades
-# =============================
 def _recipients(override: List[str] | None = None) -> List[str]:
     """Resolve a lista de destinatários.
     Se "override" for fornecido, usa-a (validando itens não vazios). Caso contrário,
